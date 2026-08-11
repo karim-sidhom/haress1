@@ -146,7 +146,7 @@
 
     <div class="statusBig horn" id="hornStatus">لا نفير حالياً</div>
 
-    <div class="meterLabel"><span>نفير القطار (300-660Hz)</span><b id="hornNum">0</b></div>
+    <div class="meterLabel"><span>نفير القطار (560-660Hz)</span><b id="hornNum">0</b></div>
     <div class="bar"><div class="fill horn" id="hornBar"></div></div>
 
     <div class="note" id="lastDetection">لا يوجد رصد بعد.</div>
@@ -225,7 +225,7 @@
   let RISE_DELTA = 25, FALL_BACK_DELTA = 15, MIN_RISE_AMPLITUDE = 40;
   let MIN_DURATION_MS = 3000, MAX_DURATION_MS = 25000;
   let BASELINE_ALPHA = 0.02;
-  let HORN_MIN_HZ = 300, HORN_MAX_HZ = 660;
+  let HORN_MIN_HZ = 560, HORN_MAX_HZ = 660;
   let HORN_SEUIL_ON = 100, HORN_SEUIL_OFF = 60;
   let HORN_MIN_PULSE_MS = 120, HORN_LONG_MS = 700, HORN_PROLONGED_MS = 1500;
   let HORN_MAX_GAP_MS = 1800, HORN_PHRASE_MAX_AGE_MS = 15000;
@@ -360,10 +360,7 @@
       if(val>peakVal){ peakVal=val; phase='rising'; }
       else if(val <= baseline + FALL_BACK_DELTA){
         const duration = now-riseStartAt, amplitude = peakVal-baseline;
-        if(amplitude>=MIN_RISE_AMPLITUDE && duration>=MIN_DURATION_MS && duration<=MAX_DURATION_MS){
-          addLog('rumble', 'مرور مكتمل — مدة '+(duration/1000).toFixed(1)+'ث، ارتفاع '+amplitude.toFixed(0));
-          document.getElementById('lastDetection').textContent = '🔊 آخر رصد دمدمة: مرور مكتمل بمدة '+(duration/1000).toFixed(1)+'ث';
-        }
+        // لا تسجيل: نطاق الدمدمة (20-250Hz) كامل تحت 560Hz
         phase='baseline'; baseline=val;
       }
       if(now-riseStartAt > MAX_DURATION_MS){ phase='baseline'; baseline=val; }
