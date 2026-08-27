@@ -1618,6 +1618,7 @@ function gererMouvement(event) {
   }
 
   freqDisplay.innerHTML = freq.toFixed(1) + '<span> Hz</span>';
+  window.dernierFreqKachef = freq;
 
   if (freq >= 5 && freq <= 5.5) {
     voyant.className = 'voyant vert';
@@ -1682,6 +1683,7 @@ function arreter() {
   actif = false;
   buffer = [];
   magnitudeLissee = null;
+  window.dernierFreqKachef = null;
   if (wakeLock) {
     wakeLock.release().catch(() => {});
     wakeLock = null;
@@ -1943,8 +1945,8 @@ window.addEventListener('resize', () => {
   // Paramètres FIXES — exactement la spécification d'origine, sans calibration ni filtre
   // ---------------------------------------------------------------
   const AMP_THRESHOLD = 0.20;
-  const FREQ_MIN = 2.0;
-  const FREQ_MAX = 2.5;
+  const FREQ_MIN = 5.0;
+  const FREQ_MAX = 5.5;
   const MIN_POINTS = 3;
   const WINDOW_MS = 200; // fenêtre glissante 150-300 ms
 
@@ -1976,6 +1978,8 @@ window.addEventListener('resize', () => {
   let running = false;
   let fenetre = [];
   let history = [];
+  let bufferAudioBrut = []; // buffer glissant ~2s d'échantillons audio bruts, pour un calcul Hz stable
+  const FENETRE_FREQ_MS = 2000; // même durée de fenêtre que كاشف الاهتزاز (FENETRE_MS=2000 côté accéléromètre)
   let tMs = 0;
   let rafId = null;
   let lastSampleTime = 0;
@@ -2053,6 +2057,7 @@ window.addEventListener('resize', () => {
 
     dataArrayFreq = new Uint8Array(analyser.frequencyBinCount);
     dataArrayTime = new Uint8Array(analyser.fftSize);
+    bufferAudioBrut = [];
 
     gate.style.display = 'none';
     btnPause.disabled = false;
@@ -2068,6 +2073,7 @@ window.addEventListener('resize', () => {
 
   function stopMic(){
     running = false;
+    bufferAudioBrut = [];
     if (rafId) cancelAnimationFrame(rafId);
     if (stream) stream.getTracks().forEach(t => t.stop());
     if (audioCtx) audioCtx.close();
@@ -2100,12 +2106,24 @@ window.addEventListener('resize', () => {
     const n = echantillonsBrut.length;
     if (n < 10) return null;
 
-    // Lissage passe-bas léger — même méthode que l'app كاشف الاهتزاز (ALPHA_LISSAGE = 0.35)
-    const ALPHA_LISSAGE = 0.35;
+    // Filtre passe-bas Butterworth 2e ordre, coupure 15 Hz.
+    // Le simple lissage EMA (ALPHA=0.35 copié de l'accéléromètre) ne coupait rien à 44100 Hz
+    // d'échantillonnage audio (c'était calibré pour ~60 Hz côté accéléromètre) — d'où les
+    // valeurs de plusieurs centaines/milliers de Hz observées. Un Butterworth 2e ordre coupe
+    // net au-dessus de 15 Hz et ne garde que le rumble lent.
+    const COUPURE_HZ = 15;
+    const wc = Math.tan(Math.PI * COUPURE_HZ / sampleRate);
+    const k1 = Math.SQRT2 * wc, k2 = wc * wc;
+    const a0 = k2 + k1 + 1;
+    const a1 = 2 * (k2 - 1) / a0, a2 = (k2 - k1 + 1) / a0;
+    const b0 = k2 / a0, b1 = 2 * k2 / a0, b2 = k2 / a0;
     const echantillons = new Array(n);
-    echantillons[0] = echantillonsBrut[0];
-    for (let i = 1; i < n; i++) {
-      echantillons[i] = ALPHA_LISSAGE * echantillonsBrut[i] + (1 - ALPHA_LISSAGE) * echantillons[i-1];
+    let x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+    for (let i = 0; i < n; i++) {
+      const xi = echantillonsBrut[i];
+      const yi = b0 * xi + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+      echantillons[i] = yi;
+      x2 = x1; x1 = xi; y2 = y1; y1 = yi;
     }
 
     // Moyenne pour centrer le signal
@@ -2146,8 +2164,18 @@ window.addEventListener('resize', () => {
     const rms = Math.sqrt(sumSq / dataArrayTime.length);
     const amp = Math.min(1, rms * 4); // mise à l'échelle pour lisibilité
 
-    // Fréquence par comptage des passages par zéro (signal temporel brut)
-    const freq = calculerFrequence(dataArrayTime, audioCtx.sampleRate);
+    // Accumulation dans un buffer glissant ~2s (même durée de fenêtre que كاشف الاهتزاز)
+    // pour un calcul Hz stable — un seul instantané FFT (~0.7s) donnait des sauts de Hz
+    // trop grossiers (résolution insuffisante).
+    const sampleRate = audioCtx.sampleRate;
+    const nNouveaux = Math.round(sampleRate * SAMPLE_MS / 1000);
+    const debut = Math.max(0, dataArrayTime.length - nNouveaux);
+    for (let i = debut; i < dataArrayTime.length; i++) bufferAudioBrut.push(dataArrayTime[i]);
+    const maxBuf = Math.round(sampleRate * FENETRE_FREQ_MS / 1000);
+    if (bufferAudioBrut.length > maxBuf) bufferAudioBrut.splice(0, bufferAudioBrut.length - maxBuf);
+
+    // Fréquence : identique au module principal كاشف الاهتزاز (valeur miroir, pas de calcul propre)
+    const freq = (typeof window.dernierFreqKachef === 'number') ? window.dernierFreqKachef : null;
 
     let maxVal = 0;
     for (let i=1;i<dataArrayFreq.length;i++){
@@ -2212,7 +2240,16 @@ window.addEventListener('resize', () => {
     const n = fenetre.length;
     const derniere = fenetre[n-1];
     ampVal.textContent = derniere.amp.toFixed(2);
-    freqVal.innerHTML = derniere.freq.toFixed(2) + '<span class="unit">Hz</span>';
+    freqVal.innerHTML = (derniere.freq === null ? '—' : derniere.freq.toFixed(2)) + '<span class="unit">Hz</span>';
+
+    if (derniere.freq === null){
+      setBadge('SURVEILLANCE');
+      trendVal.textContent = '…';
+      statusMessage.textContent = "En attente d'une mesure du module كاشف الاهتزاز (démarre-le pour avoir un Hz)...";
+      clearLadder();
+      setBannerRAS();
+      return;
+    }
 
     if (n < MIN_POINTS){
       setBadge('SURVEILLANCE');
